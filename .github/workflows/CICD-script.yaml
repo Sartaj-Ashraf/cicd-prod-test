@@ -61,7 +61,7 @@ jobs:
       - name: Build Backend (TypeScript)
         working-directory: backend
         # Outputs compiled JS to backend/dist/
-        run: npm run build
+        run: npx tsc
 
       - name: Run Backend Tests
         working-directory: backend
