@@ -412,8 +412,3 @@ jobs:
 
             pm2 status
             rm -f /tmp/release.tar.gz
-
-            echo ""
-            echo "✅  Deployment Successful — ${TIMESTAMP}"
-            echo "    Backend  → http://127.0.0.1:5000"
-            echo "    Frontend → http://127.0.0.1:3000"
