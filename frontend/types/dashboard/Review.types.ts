@@ -16,7 +16,7 @@ export type Review = {
   replyUpdatedAt?: string | null;
 };
 
-// export type ReviewListProps = {
-//   reviews: Review[];
-//   length: number;
-// };
+export type ReviewListProps = {
+  reviews: Review[];
+  length: number;
+};
