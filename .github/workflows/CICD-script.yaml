@@ -3,7 +3,7 @@ name: Production Deployment
 on:
   push:
     branches:
-      - main
+      - build-test-alias
 
 # ─────────────────────────────────────────────────────────────
 # Only cancel in-progress BUILD jobs, never a running DEPLOY.
@@ -61,7 +61,12 @@ jobs:
       - name: Build Backend (TypeScript)
         working-directory: backend
         # Outputs compiled JS to backend/dist/
-        run: npx tsc
+        run: npm run build
+
+      - name: Run Backend Tests
+        working-directory: backend
+        run: npm test --if-present
+
       # ────────────────────────────────────────────────────────
       # FRONTEND  (Next.js → standalone build)
       # ────────────────────────────────────────────────────────
@@ -161,7 +166,10 @@ jobs:
 
             APP_NAME="mango-review"
 
-            BASE_DIR="/var/www/${APP_NAME}"
+            # Use $HOME so the ubuntu user never needs sudo to create directories.
+            # /var/www is owned by root — mkdir there requires sudo.
+            # $HOME/apps is fully owned by ubuntu — no permission issues.
+            BASE_DIR="$HOME/apps/${APP_NAME}"
             RELEASES_DIR="${BASE_DIR}/releases"
             SHARED_DIR="${BASE_DIR}/shared"
             CURRENT_LINK="${BASE_DIR}/current"
@@ -214,46 +222,30 @@ jobs:
               "" \
               "MONGO_URL=${{ secrets.MONGO_URL }}" \
               "" \
-              "ACCESS_TOKEN_SECRET=${{ secrets.ACCESS_TOKEN_SECRET }}" \
-              "REFRESH_TOKEN_SECRET=${{ secrets.REFRESH_TOKEN_SECRET }}" \
+              "JWT_SECRET=${{ secrets.JWT_SECRET }}" \
+              "JWT_EXPIRES_IN=${{ secrets.JWT_EXPIRES_IN }}" \
               "" \
-              "FRONTEND_URL=${{ secrets.FRONTEND_URL }}" \
-              "FRONTEND_DEV_URL=${{ secrets.FRONTEND_DEV_URL }}" \
-              "PRODUCTION_URL1=${{ secrets.PRODUCTION_URL1 }}" \
-              "PRODUCTION_URL2=${{ secrets.PRODUCTION_URL2 }}" \
+              "EMAIL_USER=${{ secrets.EMAIL_USER }}" \
+              "EMAIL_PASS=${{ secrets.EMAIL_PASS }}" \
               "" \
-              "GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}" \
-              "GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}" \
-              "GOOGLE_LOGIN_CALLBACK_URL=${{ secrets.GOOGLE_LOGIN_CALLBACK_URL }}" \
-              "GOOGLE_MYBUISNESS_CALLBACK_URL=${{ secrets.GOOGLE_MYBUISNESS_CALLBACK_URL }}" \
-              "GOOGLE_PLACES_API_KEY=${{ secrets.GOOGLE_PLACES_API_KEY }}" \
+              "CLIENT_URL=${{ secrets.CLIENT_URL }}" \
               "" \
-              "GMB_BASE_URL=${{ secrets.GMB_BASE_URL }}" \
-              "GMB_INFO_URL=${{ secrets.GMB_INFO_URL }}" \
-              "GMB_REVIEWS_URL=${{ secrets.GMB_REVIEWS_URL }}" \
-              "" \
-              "RAZORPAY_KEY_ID=${{ secrets.RAZORPAY_KEY_ID }}" \
-              "RAZORPAY_KEY_SECRET=${{ secrets.RAZORPAY_KEY_SECRET }}" \
-              "RAZORPAY_WEBHOOK_SECRET=${{ secrets.RAZORPAY_WEBHOOK_SECRET }}" \
-              "" \
-              "TEST_EMAIL=${{ secrets.TEST_EMAIL }}" \
-              "TEST_APP_PASS=${{ secrets.TEST_APP_PASS }}" \
+              "AWS_ACCESS_KEY=${{ secrets.AWS_ACCESS_KEY }}" \
+              "AWS_SECRET_KEY=${{ secrets.AWS_SECRET_KEY }}" \
+              "AWS_BUCKET_NAME=${{ secrets.AWS_BUCKET_NAME }}" \
+              "AWS_REGION=${{ secrets.AWS_REGION }}" \
               > "${SHARED_DIR}/.env"
 
-            # Frontend .env (runtime env vars for Next.js standalone server)
+            # Frontend .env (runtime env vars for Next.js server)
             printf '%s\n' \
               "NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_URL }}" \
-              "NEXT_PUBLIC_RAZORPAY_KEY_ID=${{ secrets.NEXT_PUBLIC_RAZORPAY_KEY_ID }}" \
               "PORT=3000" \
               "HOSTNAME=0.0.0.0" \
               > "${SHARED_DIR}/.env.frontend"
 
             # Symlink shared env files into the new release
-            ln -sfn "${SHARED_DIR}/.env" \
-              "${RELEASE_DIR}/backend/.env"
-
-            ln -sfn "${SHARED_DIR}/.env.frontend" \
-              "${RELEASE_DIR}/frontend/standalone/.env"
+            ln -sfn "${SHARED_DIR}/.env"          "${RELEASE_DIR}/backend/.env"
+            ln -sfn "${SHARED_DIR}/.env.frontend"  "${RELEASE_DIR}/frontend/standalone/.env"
 
             ########################################################
             # BACKEND INSTALL  (production deps only)
@@ -277,19 +269,26 @@ jobs:
                 PREV_FRONTEND="${PREVIOUS_RELEASE}/frontend/standalone/server.js"
 
                 if [ -f "${PREV_BACKEND}" ]; then
-                  pm2 delete mango-backend 2>/dev/null || true
+                  pm2 delete mango-review-backend 2>/dev/null || true
                   pm2 start "${PREV_BACKEND}" \
-                    --name mango-backend \
+                    --name mango-review-backend \
                     --cwd "${PREVIOUS_RELEASE}/backend" \
                     --env production
                 fi
 
                 if [ -f "${PREV_FRONTEND}" ]; then
-                  pm2 delete mango-frontend 2>/dev/null || true
-                  PORT=3000 HOSTNAME=0.0.0.0 \
-                  pm2 start "${PREV_FRONTEND}" \
-                    --name mango-frontend \
-                    --cwd "${PREVIOUS_RELEASE}/frontend/standalone"
+                  pm2 delete mango-review-frontend 2>/dev/null || true
+                  PREV_ECOSYSTEM="${PREVIOUS_RELEASE}/frontend/ecosystem.config.js"
+                  if [ -f "${PREV_ECOSYSTEM}" ]; then
+                    pm2 start "${PREV_ECOSYSTEM}" \
+                      --cwd "${PREVIOUS_RELEASE}/frontend"
+                  else
+                    # Fallback: start directly with env vars
+                    PORT=3000 HOSTNAME=0.0.0.0 \
+                    pm2 start "${PREV_FRONTEND}" \
+                      --name mango-review-frontend \
+                      --cwd "${PREVIOUS_RELEASE}/frontend/standalone"
+                  fi
                 fi
 
                 pm2 save
@@ -313,12 +312,12 @@ jobs:
               exit 1
             fi
 
-            if pm2 describe mango-backend >/dev/null 2>&1; then
-              pm2 delete mango-backend
+            if pm2 describe mango-review-backend >/dev/null 2>&1; then
+              pm2 delete mango-review-backend
             fi
 
             pm2 start "${BACKEND_ENTRY}" \
-              --name mango-backend \
+              --name mango-review-backend \
               --cwd  "${RELEASE_DIR}/backend" \
               --env  production \
               --time
@@ -326,6 +325,13 @@ jobs:
             ########################################################
             # START FRONTEND  (Next.js standalone → server.js)
             # next.config.js must have: output: 'standalone'
+            #
+            # PORT and HOSTNAME must be passed via pm2's --env flag
+            # pattern OR written into the .env file that server.js
+            # reads at startup. Inline `VAR=val pm2 start` works for
+            # the first launch but pm2 drops those vars on auto-restart.
+            # We write them to the symlinked .env.frontend instead —
+            # Next.js standalone server.js reads .env automatically.
             ########################################################
 
             FRONTEND_ENTRY="${RELEASE_DIR}/frontend/standalone/server.js"
@@ -336,14 +342,12 @@ jobs:
               exit 1
             fi
 
-            if pm2 describe mango-frontend >/dev/null 2>&1; then
-              pm2 delete mango-frontend
+            if pm2 describe mango-review-frontend >/dev/null 2>&1; then
+              pm2 delete mango-review-frontend
             fi
 
-            PORT=3000 HOSTNAME=0.0.0.0 \
-            pm2 start "${FRONTEND_ENTRY}" \
-              --name mango-frontend \
-              --cwd  "${RELEASE_DIR}/frontend/standalone" \
+            pm2 start "${RELEASE_DIR}/frontend/ecosystem.config.js" \
+              --cwd "${RELEASE_DIR}/frontend" \
               --time
 
             ########################################################
