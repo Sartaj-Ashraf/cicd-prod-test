@@ -1,0 +1,420 @@
+name: Production Deployment
+
+on:
+  push:
+    branches:
+      - main
+
+# ─────────────────────────────────────────────────────────────
+# Only cancel in-progress BUILD jobs, never a running DEPLOY.
+# A half-cancelled deploy leaves the server broken.
+# ─────────────────────────────────────────────────────────────
+concurrency:
+  group: production-build
+  cancel-in-progress: true
+
+env:
+  APP_NAME: mango-review
+  NODE_VERSION: 22
+
+jobs:
+
+  # ────────────────────────────────────────────────────────────
+  # BUILD
+  # ────────────────────────────────────────────────────────────
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ────────────────────────────────────────────────────────
+      # NODE
+      # ────────────────────────────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      # ────────────────────────────────────────────────────────
+      # DEBUG
+      # ────────────────────────────────────────────────────────
+      - name: Verify Repository Structure
+        run: |
+          echo "=== Working Directory ===" && pwd
+          echo "=== Package Files ===" && find . -name package.json -not -path '*/node_modules/*'
+          echo "=== Lock Files ===" && find . -name package-lock.json -not -path '*/node_modules/*'
+
+      # ────────────────────────────────────────────────────────
+      # BACKEND  (TypeScript → compile → test)
+      # ────────────────────────────────────────────────────────
+      - name: Install Backend Dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Build Backend (TypeScript)
+        working-directory: backend
+        # Outputs compiled JS to backend/dist/
+        run: npm run build
+
+      - name: Run Backend Tests
+        working-directory: backend
+        run: npm test --if-present
+
+      # ────────────────────────────────────────────────────────
+      # FRONTEND  (Next.js → standalone build)
+      # ────────────────────────────────────────────────────────
+      - name: Install Frontend Dependencies
+        working-directory: frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+        run: npm ci
+
+      - name: Build Frontend
+        working-directory: frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+        # Requires next.config output: 'standalone' for self-contained deployment.
+        # The standalone output bundles its own node_modules — no install needed on server.
+        run: npm run build
+
+      # ────────────────────────────────────────────────────────
+      # ARTIFACT
+      # Packages only what the server actually needs:
+      #   backend  → dist/ + package.json + package-lock.json
+      #   frontend → .next/standalone + .next/static + public/
+      # ────────────────────────────────────────────────────────
+      - name: Create Deployment Artifact
+        run: |
+          set -euo pipefail
+
+          mkdir -p release/backend
+          mkdir -p release/frontend
+
+          # ── Backend ──────────────────────────────────────────
+          # Ship compiled output + manifests; node_modules are
+          # installed fresh on the server (--omit=dev).
+          cp -r backend/dist          release/backend/dist
+          cp    backend/package.json  release/backend/package.json
+          cp    backend/package-lock.json release/backend/package-lock.json
+
+          # ── Frontend (standalone mode) ────────────────────────
+          # .next/standalone is fully self-contained.
+          # .next/static and public/ must be copied alongside it.
+          cp -r frontend/.next/standalone  release/frontend/standalone
+          cp -r frontend/.next/static      release/frontend/standalone/.next/static
+          cp -r frontend/public            release/frontend/standalone/public
+
+          tar -czf release.tar.gz release
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-release
+          path: release.tar.gz
+          retention-days: 7
+
+  # ────────────────────────────────────────────────────────────
+  # DEPLOY
+  # No cancel-in-progress here — a cancelled half-deploy =
+  # a broken production server.
+  # ────────────────────────────────────────────────────────────
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: application-release
+
+      # ──────────────────────────────────────────────────────────
+      # COPY TO SERVER
+      # ──────────────────────────────────────────────────────────
+      - name: Upload Release
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          source: release.tar.gz
+          target: /tmp
+
+      # ──────────────────────────────────────────────────────────
+      # DEPLOY
+      # ──────────────────────────────────────────────────────────
+      - name: Deploy Release
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          command_timeout: 10m
+          script_stop: true
+          script: |
+            set -Eeuo pipefail
+
+            APP_NAME="mango-review"
+
+            BASE_DIR="/var/www/${APP_NAME}"
+            RELEASES_DIR="${BASE_DIR}/releases"
+            SHARED_DIR="${BASE_DIR}/shared"
+            CURRENT_LINK="${BASE_DIR}/current"
+
+            TIMESTAMP=$(date +%Y%m%d%H%M%S)
+            RELEASE_DIR="${RELEASES_DIR}/${TIMESTAMP}"
+
+            mkdir -p "${RELEASES_DIR}"
+            mkdir -p "${SHARED_DIR}"
+
+            # Capture previous release BEFORE we switch — used for rollback.
+            PREVIOUS_RELEASE=""
+            if [ -L "${CURRENT_LINK}" ]; then
+              PREVIOUS_RELEASE=$(readlink -f "${CURRENT_LINK}")
+            fi
+            echo "Previous release: ${PREVIOUS_RELEASE:-none}"
+
+            ########################################################
+            # NODE ENVIRONMENT  (NVM)
+            ########################################################
+
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+            echo "Node: $(node -v)  NPM: $(npm -v)"
+
+            ########################################################
+            # UNPACK NEW RELEASE
+            ########################################################
+
+            mkdir -p "${RELEASE_DIR}"
+
+            tar -xzf /tmp/release.tar.gz \
+              -C "${RELEASE_DIR}" \
+              --strip-components=1        # strips the top-level 'release/' dir
+
+            # Verify expected layout after unpack
+            echo "=== Release layout ===" && ls "${RELEASE_DIR}"
+
+            ########################################################
+            # SHARED ENVIRONMENT FILES
+            # Use printf instead of heredoc to avoid YAML-indentation
+            # contaminating env var values with leading whitespace.
+            ########################################################
+
+            # Backend .env
+            printf '%s\n' \
+              "PORT=5000" \
+              "NODE_ENV=production" \
+              "" \
+              "MONGO_URL=${{ secrets.MONGO_URL }}" \
+              "" \
+              "ACCESS_TOKEN_SECRET=${{ secrets.ACCESS_TOKEN_SECRET }}" \
+              "REFRESH_TOKEN_SECRET=${{ secrets.REFRESH_TOKEN_SECRET }}" \
+              "" \
+              "FRONTEND_URL=${{ secrets.FRONTEND_URL }}" \
+              "FRONTEND_DEV_URL=${{ secrets.FRONTEND_DEV_URL }}" \
+              "PRODUCTION_URL1=${{ secrets.PRODUCTION_URL1 }}" \
+              "PRODUCTION_URL2=${{ secrets.PRODUCTION_URL2 }}" \
+              "" \
+              "GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}" \
+              "GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}" \
+              "GOOGLE_LOGIN_CALLBACK_URL=${{ secrets.GOOGLE_LOGIN_CALLBACK_URL }}" \
+              "GOOGLE_MYBUISNESS_CALLBACK_URL=${{ secrets.GOOGLE_MYBUISNESS_CALLBACK_URL }}" \
+              "GOOGLE_PLACES_API_KEY=${{ secrets.GOOGLE_PLACES_API_KEY }}" \
+              "" \
+              "GMB_BASE_URL=${{ secrets.GMB_BASE_URL }}" \
+              "GMB_INFO_URL=${{ secrets.GMB_INFO_URL }}" \
+              "GMB_REVIEWS_URL=${{ secrets.GMB_REVIEWS_URL }}" \
+              "" \
+              "RAZORPAY_KEY_ID=${{ secrets.RAZORPAY_KEY_ID }}" \
+              "RAZORPAY_KEY_SECRET=${{ secrets.RAZORPAY_KEY_SECRET }}" \
+              "RAZORPAY_WEBHOOK_SECRET=${{ secrets.RAZORPAY_WEBHOOK_SECRET }}" \
+              "" \
+              "TEST_EMAIL=${{ secrets.TEST_EMAIL }}" \
+              "TEST_APP_PASS=${{ secrets.TEST_APP_PASS }}" \
+              > "${SHARED_DIR}/.env"
+
+            # Frontend .env (runtime env vars for Next.js standalone server)
+            printf '%s\n' \
+              "NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_URL }}" \
+              "NEXT_PUBLIC_RAZORPAY_KEY_ID=${{ secrets.NEXT_PUBLIC_RAZORPAY_KEY_ID }}" \
+              "PORT=3000" \
+              "HOSTNAME=0.0.0.0" \
+              > "${SHARED_DIR}/.env.frontend"
+
+            # Symlink shared env files into the new release
+            ln -sfn "${SHARED_DIR}/.env" \
+              "${RELEASE_DIR}/backend/.env"
+
+            ln -sfn "${SHARED_DIR}/.env.frontend" \
+              "${RELEASE_DIR}/frontend/standalone/.env"
+
+            ########################################################
+            # BACKEND INSTALL  (production deps only)
+            ########################################################
+
+            cd "${RELEASE_DIR}/backend"
+            npm ci --omit=dev
+
+            ########################################################
+            # ROLLBACK HELPER
+            ########################################################
+
+            rollback() {
+              echo "!!! Deployment failed — rolling back !!!"
+              if [ -n "${PREVIOUS_RELEASE}" ] && [ -d "${PREVIOUS_RELEASE}" ]; then
+                echo "Switching symlink back to ${PREVIOUS_RELEASE}"
+                ln -sfn "${PREVIOUS_RELEASE}" "${CURRENT_LINK}"
+
+                # Restart PM2 processes from the previous release
+                PREV_BACKEND="${PREVIOUS_RELEASE}/backend/dist/server.js"
+                PREV_FRONTEND="${PREVIOUS_RELEASE}/frontend/standalone/server.js"
+
+                if [ -f "${PREV_BACKEND}" ]; then
+                  pm2 delete mango-backend 2>/dev/null || true
+                  pm2 start "${PREV_BACKEND}" \
+                    --name mango-backend \
+                    --cwd "${PREVIOUS_RELEASE}/backend" \
+                    --env production
+                fi
+
+                if [ -f "${PREV_FRONTEND}" ]; then
+                  pm2 delete mango-frontend 2>/dev/null || true
+                  PORT=3000 HOSTNAME=0.0.0.0 \
+                  pm2 start "${PREV_FRONTEND}" \
+                    --name mango-frontend \
+                    --cwd "${PREVIOUS_RELEASE}/frontend/standalone"
+                fi
+
+                pm2 save
+                echo "Rollback complete."
+              else
+                echo "No previous release to roll back to."
+              fi
+            }
+
+            # Register the rollback trap — fires on any error below
+            trap rollback ERR
+
+            ########################################################
+            # START BACKEND  (Node.js / compiled TS → dist/server.js)
+            ########################################################
+
+            BACKEND_ENTRY="${RELEASE_DIR}/backend/dist/server.js"
+
+            if [ ! -f "${BACKEND_ENTRY}" ]; then
+              echo "ERROR: Backend entry not found at ${BACKEND_ENTRY}"
+              exit 1
+            fi
+
+            if pm2 describe mango-backend >/dev/null 2>&1; then
+              pm2 delete mango-backend
+            fi
+
+            pm2 start "${BACKEND_ENTRY}" \
+              --name mango-backend \
+              --cwd  "${RELEASE_DIR}/backend" \
+              --env  production \
+              --time
+
+            ########################################################
+            # START FRONTEND  (Next.js standalone → server.js)
+            # next.config.js must have: output: 'standalone'
+            ########################################################
+
+            FRONTEND_ENTRY="${RELEASE_DIR}/frontend/standalone/server.js"
+
+            if [ ! -f "${FRONTEND_ENTRY}" ]; then
+              echo "ERROR: Frontend standalone server.js not found at ${FRONTEND_ENTRY}"
+              echo "Make sure next.config.js has: output: 'standalone'"
+              exit 1
+            fi
+
+            if pm2 describe mango-frontend >/dev/null 2>&1; then
+              pm2 delete mango-frontend
+            fi
+
+            PORT=3000 HOSTNAME=0.0.0.0 \
+            pm2 start "${FRONTEND_ENTRY}" \
+              --name mango-frontend \
+              --cwd  "${RELEASE_DIR}/frontend/standalone" \
+              --time
+
+            ########################################################
+            # HEALTH CHECKS
+            ########################################################
+
+            echo "Waiting for services to boot..."
+            sleep 8
+
+            # Backend health check
+            if ! curl -fsS --max-time 10 http://127.0.0.1:5000/health; then
+              echo "ERROR: Backend health check failed"
+              exit 1
+            fi
+            echo "Backend healthy ✓"
+
+            # Frontend health check
+            if ! curl -fsS --max-time 10 http://127.0.0.1:3000; then
+              echo "ERROR: Frontend health check failed"
+              exit 1
+            fi
+            echo "Frontend healthy ✓"
+
+            # Disarm rollback trap — health checks passed
+            trap - ERR
+
+            ########################################################
+            # SWITCH CURRENT SYMLINK
+            ########################################################
+
+            ln -sfn "${RELEASE_DIR}" "${CURRENT_LINK}"
+            echo "Current → ${RELEASE_DIR}"
+
+            ########################################################
+            # PM2 PERSISTENCE
+            ########################################################
+
+            pm2 save
+
+            # Only register startup script if not already configured
+            # (avoids sudo failures on subsequent deploys)
+            if [ ! -f /etc/systemd/system/pm2-ubuntu.service ]; then
+              sudo env PATH=$PATH:/home/ubuntu/.nvm/versions/node/$(node -v)/bin \
+                pm2 startup systemd -u ubuntu --hp /home/ubuntu || true
+            fi
+
+            ########################################################
+            # CLEAN OLD RELEASES  (keep last 5)
+            ########################################################
+
+            find "${RELEASES_DIR}" \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d \
+              | sort -r \
+              | tail -n +6 \
+              | xargs -r rm -rf
+
+            ########################################################
+            # FINAL STATUS
+            ########################################################
+
+            pm2 status
+            rm -f /tmp/release.tar.gz
+
+            echo ""
+            echo "✅  Deployment Successful — ${TIMESTAMP}"
+            echo "    Backend  → http://127.0.0.1:5000"
+            echo "    Frontend → http://127.0.0.1:3000"
