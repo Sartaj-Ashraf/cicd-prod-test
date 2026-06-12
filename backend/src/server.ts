@@ -29,6 +29,9 @@ if (process.env.NODE_ENV === "dev") {
 }
 
 app.use("/api/v1/webhook", webhookRoutes);
+app.get('/health', (_req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
 
 app.use(express.json({ limit: "50kb" }));
 app.use(express.urlencoded({ extended: true, limit: "50kb" }));
