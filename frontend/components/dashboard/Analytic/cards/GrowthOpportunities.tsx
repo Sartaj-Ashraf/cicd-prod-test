@@ -1,4 +1,6 @@
 import { Flame } from "lucide-react";
+
+
 interface Props {
   growthOpportunities: any[];
 }
