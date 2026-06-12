@@ -1,7 +1,4 @@
 import { Flame } from "lucide-react";
-
-import { impactColor } from "@/utils/dashboard/colors";
-
 interface Props {
   growthOpportunities: any[];
 }
