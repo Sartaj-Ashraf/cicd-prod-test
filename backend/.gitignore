@@ -1,0 +1,69 @@
+
+# =====================
+# Dependencies
+# =====================
+node_modules/
+
+# =====================
+# Build output (TypeScript)
+# =====================
+dist/
+build/
+out/
+
+# =====================
+# Environment variables
+# =====================
+.env
+.env.*
+!.env.example
+
+# =====================
+# Logs
+# =====================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# =====================
+# TypeScript cache
+# =====================
+*.tsbuildinfo
+
+# =====================
+# Coverage (testing)
+# =====================
+coverage/
+
+# =====================
+# OS files
+# =====================
+.DS_Store
+Thumbs.db
+
+# =====================
+# IDE / Editor
+# =====================
+.vscode/
+.idea/
+
+# =====================
+# Uploads / runtime files (common in backend APIs)
+# =====================
+uploads/
+temp/
+storage/
+
+# =====================
+# Docker (optional)
+# =====================
+Dockerfile
+docker-compose.yml
+
+# =====================
+# Misc
+# =====================
+*.pem
+*.key

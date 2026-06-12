@@ -1,0 +1,1 @@
+export const ANALYSIS_STALE_TIME=1*60*1000
