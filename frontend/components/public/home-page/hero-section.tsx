@@ -81,7 +81,7 @@ export const HeroSection = () => {
         {splitWords("Build Customer Trust With")}
         
      
-        <span className="text-leaf-light">{splitWords("Smarter Review Management")}</span>
+        <span className="text-leaf-light">{splitWords("Smarter Review Management Version 1.0")}</span>
       </h1>
 
       {/* Subtitle */}

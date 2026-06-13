@@ -157,7 +157,7 @@ jobs:
           script: |
             set -Eeuo pipefail
 
-            APP_NAME="mango-review"
+            APP_NAME=${APP_NAME}
 
             BASE_DIR="$HOME/apps/${APP_NAME}"
             RELEASES_DIR="${BASE_DIR}/releases"
@@ -272,17 +272,17 @@ jobs:
                 PREV_FRONTEND="${PREVIOUS_RELEASE}/frontend/standalone/server.js"
 
                 if [ -f "${PREV_BACKEND}" ]; then
-                  pm2 delete mango-review-backend 2>/dev/null || true
+                  pm2 delete ${APP_NAME}-backend 2>/dev/null || true
                   pm2 start "${PREV_BACKEND}" \
-                    --name mango-review-backend \
+                    --name ${APP_NAME}-backend \
                     --cwd "${PREVIOUS_RELEASE}/backend" \
                     --env production
                 fi
 
                 if [ -f "${PREV_FRONTEND}" ]; then
-                  pm2 delete mango-review-frontend 2>/dev/null || true
+                  pm2 delete ${APP_NAME}-frontend 2>/dev/null || true
                   pm2 start "${PREV_FRONTEND}" \
-                    --name mango-review-frontend \
+                    --name ${APP_NAME}-frontend \
                     --cwd "${PREVIOUS_RELEASE}/frontend/standalone"
                 fi
 
@@ -307,12 +307,12 @@ jobs:
               exit 1
             fi
 
-            if pm2 describe mango-review-backend >/dev/null 2>&1; then
-              pm2 delete mango-review-backend
+            if pm2 describe ${APP_NAME}-backend >/dev/null 2>&1; then
+              pm2 delete ${APP_NAME}-backend
             fi
 
             pm2 start "${BACKEND_ENTRY}" \
-              --name mango-review-backend \
+              --name ${APP_NAME}-backend \
               --cwd  "${RELEASE_DIR}/backend" \
               --env  production \
               --time
@@ -334,12 +334,12 @@ jobs:
               exit 1
             fi
 
-            if pm2 describe mango-review-frontend >/dev/null 2>&1; then
-              pm2 delete mango-review-frontend
+            if pm2 describe ${APP_NAME}-frontend >/dev/null 2>&1; then
+              pm2 delete ${APP_NAME}-frontend
             fi
 
             pm2 start "${FRONTEND_ENTRY}" \
-              --name mango-review-frontend \
+              --name ${APP_NAME}-frontend \
               --cwd  "${RELEASE_DIR}/frontend/standalone" \
               --time
 
