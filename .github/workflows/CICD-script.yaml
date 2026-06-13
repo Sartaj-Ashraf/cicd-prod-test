@@ -156,6 +156,9 @@ jobs:
           script_stop: true
           script: |
             set -Eeuo pipefail
+
+            APP_NAME=${{ env.APP_NAME }}
+
             BASE_DIR="$HOME/apps/${APP_NAME}"
             RELEASES_DIR="${BASE_DIR}/releases"
             SHARED_DIR="${BASE_DIR}/shared"
