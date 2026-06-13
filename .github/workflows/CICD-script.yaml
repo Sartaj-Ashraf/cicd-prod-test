@@ -242,8 +242,6 @@ jobs:
             printf '%s\n' \
               "NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_URL }}" \
               "NEXT_PUBLIC_RAZORPAY_KEY_ID=${{ secrets.NEXT_PUBLIC_RAZORPAY_KEY_ID }}" \
-              "PORT=3000" \
-              "HOSTNAME=0.0.0.0" \
               > "${SHARED_DIR}/.env.frontend"
 
             # Symlink shared env files into the new release

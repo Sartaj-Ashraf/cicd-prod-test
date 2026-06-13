@@ -78,7 +78,7 @@ export const HeroSection = () => {
         ref={titleRef}
         className="font-semibold leading-tight  text-subheading max-w-5xl"
       >
-        {splitWords("Build Customer Trust With")}
+        {splitWords("Build Customer Trust With Sartaj Ashraf")}
         
      
         <span className="text-leaf-light">{splitWords("Smarter Review Management")}</span>
