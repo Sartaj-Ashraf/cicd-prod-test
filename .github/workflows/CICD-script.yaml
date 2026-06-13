@@ -640,6 +640,7 @@ jobs:
               "TEST_EMAIL=${{ secrets.TEST_EMAIL }}" \
               "TEST_APP_PASS=${{ secrets.TEST_APP_PASS }}" \
               "CODE:=${{ secrets.CODE }}" \
+              "RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}" \
               > "${SHARED_DIR}/.env"
 
             # Frontend .env (runtime env vars for Next.js standalone server)
